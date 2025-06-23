@@ -1,2 +1,2 @@
-# cortial_layer
-Cortical layer project
+# cortical layer project
+
