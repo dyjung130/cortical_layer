@@ -24,6 +24,9 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
+#params for the mainscript
+params = {'sort_by_ap': True, 'spacing_mm': 0.12, 'dist_max_mm': 0.48, 'clim_max': 1, 'do_diff':True, 'fontsize': 9}
+
 def sample_at_points(volume, points, affine):
     """Sample volume intensities at given points using trilinear interpolation"""
     inv_affine = np.linalg.inv(affine)
@@ -31,10 +34,11 @@ def sample_at_points(volume, points, affine):
     voxel_coords = (inv_affine @ homogeneous.T)[:3, :]
     return map_coordinates(volume.get_fdata(), voxel_coords, order=1, mode='constant', cval=0.0)
 
-def generate_layer_intensity_difference(vol, layer_type, path_surf_norm, path_surf_coords, 
+def generate_layer_intensity_profile(vol, layer_type, path_surf_norm, path_surf_coords, 
                                      save_path=None, sort_by_ap=True, spacing_mm=0.12,
-                                     dist_max_mm=2, clim_max=3, cmap='RdBu_r'):
-    """Generate and plot intensity differences at varying distances from cortical surface"""
+                                     dist_max_mm=2, clim_max=3, cmap='RdBu_r', do_diff=False, fontsize = 9):
+                                     
+    """Generate and plot intensity profiles at varying distances from cortical surface"""
     
     # Load surface data
     surf_norm = nib.load(path_surf_norm)
@@ -57,48 +61,67 @@ def generate_layer_intensity_difference(vol, layer_type, path_surf_norm, path_su
         ap_order = np.arange(all_values.shape[1])
         x_label_title = 'Vertices (not ordered)'
     
-    # Calculate the first-order gradient of the intensity values from top to bottom
-    diff_data = np.diff(all_values, axis=0)
-    y_extent = [-spacing_mm * diff_data.shape[0]/2, spacing_mm * (diff_data.shape[0]/2-1)]
-    print('y_extent', y_extent)
+    if do_diff:
+        #added 082725 noarmzlize and calculate diff
+        le_data = all_values
+        #normalize the intensity values along columns
+        #le_data = (le_data - np.mean(le_data, axis=0)) / np.std(le_data, axis=0)
+        # Calculate the first-order gradient of the intensity values from top to bottom
+        le_data = np.diff(le_data, axis=0)
+        #y_extent = [-spacing_mm * le_data.shape[0]/2, spacing_mm * (le_data.shape[0]/2-1)]#previously I set to -1 but it's not correct
+        y_extent = [-spacing_mm * le_data.shape[0]/2, spacing_mm * (le_data.shape[0]/2)]#
+    else:
+        le_data = all_values
+        #normalize the intensity values along columns
+        #le_data = (le_data - np.mean(le_data, axis=0)) / np.std(le_data, axis=0)
+        y_extent = [-spacing_mm * le_data.shape[0]/2, spacing_mm * (le_data.shape[0]/2)]
     
-    fig = plt.figure(figsize=(8, 3))
-    im = plt.imshow(diff_data, aspect='auto', cmap=cmap, 
-                   extent=[0, diff_data.shape[1], y_extent[0], y_extent[1]])
+    fig = plt.figure(figsize=(8, 1))
+    im = plt.imshow(le_data, aspect='auto', cmap=cmap, 
+                   extent=[0, le_data.shape[1], y_extent[0], y_extent[1]])
     
     # Add colorbar and formatting
     cbar = plt.colorbar(im, shrink=0.8)
-    cbar.set_label('Intensity difference', fontsize=12, rotation=270, labelpad=10)
+
+    if do_diff:
+        cbar.set_label('Intensity diff', fontsize=fontsize-1, rotation=270, labelpad=10)
+    else:
+        cbar.set_label('Intensity', fontsize=fontsize-1, rotation=270, labelpad=10)
+
     plt.clim(-clim_max, clim_max)
     cbar.set_ticks([-clim_max, 0, clim_max])
-    cbar.ax.set_yticklabels([f'<-{clim_max}', '0', f'>{clim_max}'])
+    cbar.ax.set_yticklabels([f'<-{clim_max}', '0', f'>{clim_max}'],fontsize=fontsize)
     
     # Configure axes
-    y_ticks_pos = np.arange(0, y_extent[1], spacing_mm*3)
-    y_ticks_neg = np.arange(0, y_extent[0], -spacing_mm*3)[1:]
+    y_ticks_pos = np.arange(0, y_extent[1], spacing_mm)
+    y_ticks_neg = np.arange(0, y_extent[0], -spacing_mm)[1:]
     y_ticks = np.concatenate([y_ticks_neg, y_ticks_pos])
-    plt.yticks(y_ticks)
-    plt.ylabel(f'Distance from {layer_type} surface (mm)')
-    plt.xlabel(x_label_title)
+    plt.yticks(y_ticks,fontsize=fontsize)
+    plt.xticks(fontsize=fontsize)
+    plt.ylabel(f'rel. {layer_type} (mm)',fontsize=fontsize)
+    plt.xlabel(x_label_title,fontsize=fontsize)
     plt.axhline(y=0, color='black', linewidth=0.5, linestyle=':')
     
     # Add direction labels
     ax2 = plt.gca().twinx()
     ax2.set_ylim(y_extent)
-    ax2.set_yticks([spacing_mm*5, spacing_mm*len(diff_data)])
-    ax2.set_yticklabels(['along neg normal', 'along pos normal'], rotation=-90, fontsize=9)
+    ax2.set_yticks([spacing_mm, spacing_mm*len(le_data)])
+    ax2.set_yticklabels(['neg norm', 'pos norm'], rotation=-90, fontsize=fontsize-3)
     ax2.get_yticklabels()[0].set_color('#2166AC')
     ax2.get_yticklabels()[1].set_color('#B2182B')
     
     # Save plot if path provided
     if save_path:
         os.makedirs(save_path, exist_ok=True)
-        plt.savefig(f'{save_path}/{layer_type}.diff.png', dpi=300, bbox_inches='tight')
+        if do_diff:
+            plt.savefig(f'{save_path}/{layer_type}.diff.png', dpi=300, bbox_inches='tight')
+        else:
+            plt.savefig(f'{save_path}/{layer_type}.raw.png', dpi=300, bbox_inches='tight')
         
     # Clean up figure
     plt.close(fig)
     
-    return all_values, diff_data, dist_array, ap_order
+    return all_values, le_data, dist_array, ap_order
 
 def main():
     # Parse command line arguments
@@ -147,7 +170,7 @@ def main():
     # Main processing
     try:
         results = {}
-        params = {'sort_by_ap': True, 'spacing_mm': 0.12, 'dist_max_mm': 2, 'clim_max': 1}
+       
         
         for layer_type in ['inf', 'white', 'pial']:
             files_path = os.path.join(base_path, subject_name, f'{hemi}.{layer_type}.32k_fs_LR')
@@ -164,21 +187,24 @@ def main():
                 continue
                 
             print(f"Processing layer: {layer_type}")
-            raw, diff, dist_array, ap_order = generate_layer_intensity_difference(
+            #calculate intensity profile
+            raw, le_data, dist_array, ap_order = generate_layer_intensity_profile(
                 vol, layer_type,
                 surf_norm_path,
                 surf_coord_path,
                 save_path_subject, **params
             )
             results[f'{layer_type}_raw_intensity'] = raw
-            results[f'{layer_type}_diff_intensity'] = diff
+            key = f'{layer_type}_{"diff" if params["do_diff"] else "raw"}_intensity'
+            results[key] = le_data
             results[f'{layer_type}_ap_order'] = ap_order
+            
         
         # Save results
         if results:
             params['dist_array'] = dist_array
             results['params'] = params
-            output_file = os.path.join(save_path_subject, 'intensity_diff_results.npz')
+            output_file = os.path.join(save_path_subject, f"intensity_{'diff' if params['do_diff'] else 'raw'}_{int(params['spacing_mm']*1000)}um_results.npz")
             np.savez(output_file, **results)
             print(f"Results saved to: {output_file}")
         else:
