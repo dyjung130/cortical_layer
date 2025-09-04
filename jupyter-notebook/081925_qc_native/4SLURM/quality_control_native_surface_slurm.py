@@ -25,7 +25,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 #params for the mainscript
-params = {'sort_by_ap': True, 'spacing_mm': 0.12, 'dist_max_mm': 0.48, 'clim_max': 1, 'do_diff':True, 'fontsize': 9}
+params = {'sort_by_ap': True, 'spacing_mm': 0.24, 'dist_max_mm': 1.2, 'clim_max': 1, 'do_diff':True, 'dist_method':1, 'fontsize': 9}
 
 def sample_at_points(volume, points, affine):
     """Sample volume intensities at given points using trilinear interpolation"""
@@ -36,7 +36,7 @@ def sample_at_points(volume, points, affine):
 
 def generate_layer_intensity_profile(vol, layer_type, path_surf_norm, path_surf_coords, 
                                      save_path=None, sort_by_ap=True, spacing_mm=0.12,
-                                     dist_max_mm=2, clim_max=3, cmap='RdBu_r', do_diff=False, fontsize = 9):
+                                     dist_max_mm=2, clim_max=3, cmap='RdBu_r', do_diff=False, fontsize = 9, dist_method=0):
                                      
     """Generate and plot intensity profiles at varying distances from cortical surface"""
     
@@ -47,8 +47,18 @@ def generate_layer_intensity_profile(vol, layer_type, path_surf_norm, path_surf_
     # Extract coordinates and normals
     norm_xyz = np.array([surf_norm.darrays[i].data for i in range(3)])
     surf_xyz = np.array([surf_coords.darrays[i].data for i in range(3)])
-    dist_array = np.flipud(np.concatenate([-np.arange(spacing_mm/2, dist_max_mm, spacing_mm)[::-1], 
-                                          np.arange(spacing_mm/2, dist_max_mm, spacing_mm)]))
+
+    if dist_method == 0:
+        #method 1 
+        #calculate half voxel up (spacing mm/2) and down (spacing mm/2) from the surface along the surfarce normal 
+        dist_array = np.flipud(np.concatenate([-np.arange(spacing_mm/2, dist_max_mm, spacing_mm)[::-1], 
+                                            np.arange(spacing_mm/2, dist_max_mm, spacing_mm)]))
+    elif dist_method == 1:
+        #method 2 
+        #calculate full voxel length along the surface normal
+        dist_array = np.flipud(np.concatenate([-np.arange(spacing_mm, dist_max_mm, spacing_mm)[::-1], [0], 
+                                            np.arange(spacing_mm, dist_max_mm, spacing_mm)]))
+                                          
     all_points = [surf_xyz.T + norm_xyz.T * d for d in dist_array]
     all_values = np.array([sample_at_points(vol, p, vol.affine) for p in all_points])
     
@@ -64,64 +74,72 @@ def generate_layer_intensity_profile(vol, layer_type, path_surf_norm, path_surf_
     if do_diff:
         #added 082725 noarmzlize and calculate diff
         le_data = all_values
-        #normalize the intensity values along columns
-        #le_data = (le_data - np.mean(le_data, axis=0)) / np.std(le_data, axis=0)
+        #normalize the intensity values along columns 
+        le_data_norm = np.diff((le_data - np.mean(le_data, axis=0)) / np.std(le_data, axis=0), axis=0)
         # Calculate the first-order gradient of the intensity values from top to bottom
         le_data = np.diff(le_data, axis=0)
         #y_extent = [-spacing_mm * le_data.shape[0]/2, spacing_mm * (le_data.shape[0]/2-1)]#previously I set to -1 but it's not correct
         y_extent = [-spacing_mm * le_data.shape[0]/2, spacing_mm * (le_data.shape[0]/2)]#
     else:
         le_data = all_values
+        #normalized 
+        le_data_norm  = (le_data - np.mean(le_data, axis=0)) / np.std(le_data, axis=0)
         #normalize the intensity values along columns
         #le_data = (le_data - np.mean(le_data, axis=0)) / np.std(le_data, axis=0)
         y_extent = [-spacing_mm * le_data.shape[0]/2, spacing_mm * (le_data.shape[0]/2)]
     
-    fig = plt.figure(figsize=(8, 1))
-    im = plt.imshow(le_data, aspect='auto', cmap=cmap, 
-                   extent=[0, le_data.shape[1], y_extent[0], y_extent[1]])
-    
-    # Add colorbar and formatting
-    cbar = plt.colorbar(im, shrink=0.8)
 
-    if do_diff:
-        cbar.set_label('Intensity diff', fontsize=fontsize-1, rotation=270, labelpad=10)
-    else:
-        cbar.set_label('Intensity', fontsize=fontsize-1, rotation=270, labelpad=10)
 
-    plt.clim(-clim_max, clim_max)
-    cbar.set_ticks([-clim_max, 0, clim_max])
-    cbar.ax.set_yticklabels([f'<-{clim_max}', '0', f'>{clim_max}'],fontsize=fontsize)
-    
-    # Configure axes
-    y_ticks_pos = np.arange(0, y_extent[1], spacing_mm)
-    y_ticks_neg = np.arange(0, y_extent[0], -spacing_mm)[1:]
-    y_ticks = np.concatenate([y_ticks_neg, y_ticks_pos])
-    plt.yticks(y_ticks,fontsize=fontsize)
-    plt.xticks(fontsize=fontsize)
-    plt.ylabel(f'rel. {layer_type} (mm)',fontsize=fontsize)
-    plt.xlabel(x_label_title,fontsize=fontsize)
-    plt.axhline(y=0, color='black', linewidth=0.5, linestyle=':')
-    
-    # Add direction labels
-    ax2 = plt.gca().twinx()
-    ax2.set_ylim(y_extent)
-    ax2.set_yticks([spacing_mm, spacing_mm*len(le_data)])
-    ax2.set_yticklabels(['neg norm', 'pos norm'], rotation=-90, fontsize=fontsize-3)
-    ax2.get_yticklabels()[0].set_color('#2166AC')
-    ax2.get_yticklabels()[1].set_color('#B2182B')
-    
-    # Save plot if path provided
-    if save_path:
-        os.makedirs(save_path, exist_ok=True)
-        if do_diff:
-            plt.savefig(f'{save_path}/{layer_type}.diff.png', dpi=300, bbox_inches='tight')
-        else:
-            plt.savefig(f'{save_path}/{layer_type}.raw.png', dpi=300, bbox_inches='tight')
+    for data2plot in [le_data, le_data_norm]:
+        norm_type = 'norm' if np.array_equal(data2plot, le_data_norm) else 'raw'
+
+        fig = plt.figure(figsize=(8, 1))
+        im = plt.imshow(data2plot, aspect='auto', cmap=cmap, 
+                    extent=[0, data2plot.shape[1], y_extent[0], y_extent[1]])
         
-    # Clean up figure
-    plt.close(fig)
+        # Add colorbar and formatting
+        cbar = plt.colorbar(im, shrink=0.8)
+
+        if do_diff:
+            #if plotting np.diff
+            cbar.set_label('Intensity diff', fontsize=fontsize-1, rotation=270, labelpad=10)
+        else:
+            #if raw intensity
+            cbar.set_label('Intensity', fontsize=fontsize-1, rotation=270, labelpad=10)
+
+        plt.clim(-clim_max, clim_max)
+        cbar.set_ticks([-clim_max, 0, clim_max])
+        cbar.ax.set_yticklabels([f'<-{clim_max}', '0', f'>{clim_max}'],fontsize=fontsize)
+        
+        # Configure axes
+        y_ticks_pos = np.arange(0, y_extent[1], spacing_mm)
+        y_ticks_neg = np.arange(0, y_extent[0], -spacing_mm)[1:]
+        y_ticks = np.concatenate([y_ticks_neg, y_ticks_pos])
+        plt.yticks(y_ticks,fontsize=fontsize)
+        plt.xticks(fontsize=fontsize)
+        plt.ylabel(f'rel. {layer_type} (mm)',fontsize=fontsize)
+        plt.xlabel(x_label_title,fontsize=fontsize)
+
+        # Add direction labels
+        ax2 = plt.gca().twinx()
+        ax2.set_ylim(y_extent)
+        ax2.set_yticks([spacing_mm, spacing_mm*len(le_data)])
+        ax2.set_yticklabels(['neg norm', 'pos norm'], rotation=-90, fontsize=fontsize-3)
+        ax2.get_yticklabels()[0].set_color('#2166AC')
+        ax2.get_yticklabels()[1].set_color('#B2182B')
+        
+        # Save plot if path provided
+        if save_path:
+            os.makedirs(save_path, exist_ok=True)
+            if do_diff:
+                plt.savefig(f'{save_path}/{layer_type}_diff_{norm_type}_{int(spacing_mm*1000)}um.png', dpi=300, bbox_inches='tight')
+            else:
+                plt.savefig(f'{save_path}/{layer_type}_{norm_type}_{int(spacing_mm*1000)}um.png', dpi=300, bbox_inches='tight')
+            
+        # Clean up figure
+        plt.close(fig)
     
-    return all_values, le_data, dist_array, ap_order
+    return all_values, le_data, le_data_norm, dist_array, ap_order
 
 def main():
     # Parse command line arguments
@@ -138,7 +156,7 @@ def main():
     print(f"Hemisphere: {hemi}")
     
     # Set up paths
-    save_path = './figures/'
+    save_path = f'./output_{int(params["spacing_mm"]*1000)}um/'
     save_path_subject = os.path.join(save_path, subject_name, hemi)
     
     # Create directories
@@ -172,7 +190,8 @@ def main():
         results = {}
        
         
-        for layer_type in ['inf', 'white', 'pial']:
+        #for layer_type in ['inf', 'white', 'pial']:
+        for layer_type in ['inf']: #just need 'inf' for now 090425 DJ
             files_path = os.path.join(base_path, subject_name, f'{hemi}.{layer_type}.32k_fs_LR')
             
             # Check if required surface files exist
@@ -188,7 +207,7 @@ def main():
                 
             print(f"Processing layer: {layer_type}")
             #calculate intensity profile
-            raw, le_data, dist_array, ap_order = generate_layer_intensity_profile(
+            raw, le_data, le_data_norm, dist_array, ap_order = generate_layer_intensity_profile(
                 vol, layer_type,
                 surf_norm_path,
                 surf_coord_path,
@@ -197,6 +216,8 @@ def main():
             results[f'{layer_type}_raw_intensity'] = raw
             key = f'{layer_type}_{"diff" if params["do_diff"] else "raw"}_intensity'
             results[key] = le_data
+            key_norm = f'{layer_type}_{"diff" if params["do_diff"] else "raw"}_norm_intensity'
+            results[key_norm] = le_data_norm
             results[f'{layer_type}_ap_order'] = ap_order
             
         
