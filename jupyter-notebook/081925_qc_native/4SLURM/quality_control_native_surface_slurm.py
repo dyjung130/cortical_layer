@@ -25,7 +25,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 #params for the mainscript
-params = {'sort_by_ap': True, 'spacing_mm': 0.24, 'dist_max_mm': 1.2, 'clim_max': 1, 'do_diff':True, 'dist_method':1, 'fontsize': 9}
+params = {'sort_by_ap': False, 'spacing_mm': 0.24, 'dist_max_mm': 1.2, 'clim_max': 1, 'do_diff':True, 'dist_method':1, 'fontsize': 9}
 
 def sample_at_points(volume, points, affine):
     """Sample volume intensities at given points using trilinear interpolation"""
@@ -33,6 +33,14 @@ def sample_at_points(volume, points, affine):
     homogeneous = np.column_stack([points, np.ones(len(points))])
     voxel_coords = (inv_affine @ homogeneous.T)[:3, :]
     return map_coordinates(volume.get_fdata(), voxel_coords, order=1, mode='constant', cval=0.0)
+
+#def sample_at_points_workbench(volume, points):
+#
+#    """Sample volume intensities at given points using workbench's trilinear interpolation"""
+#    cmd = f'wb_command -volume-to-surface-mapping {volume_path} {surface_file} {output_file} -trilinear'
+
+#def generate_surface_voxels_up_and_down
+
 
 def generate_layer_intensity_profile(vol, layer_type, path_surf_norm, path_surf_coords, 
                                      save_path=None, sort_by_ap=True, spacing_mm=0.12,

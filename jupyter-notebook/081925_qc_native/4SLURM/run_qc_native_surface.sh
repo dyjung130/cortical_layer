@@ -3,23 +3,25 @@
 #SBATCH --job-name=surface_analysis
 #SBATCH --output=logs/surface_analysis_%A_%a.out
 #SBATCH --error=logs/surface_analysis_%A_%a.err
-#SBATCH --array=1-N  # Replace N with actual number of subjects
-#SBATCH --time=01:00:00
+#SBATCH --array=1-17 # Replace N with actual number of subjects
+#SBATCH --time=00:30:00
 #SBATCH --ntasks-per-node=8
 #SBATCH --partition=RM-shared
 
-CONDA_ENV_NAME="niwrapenv"
-
+CONDA_ENV_NAME="niwrapenv" #this has workbench 
 # Set base path where all subject folders are located
 BASE_PATH="/ocean/projects/bio220042p/djung2/data/exvivo_mod"
-PYTHON_SCRIPT="/ocean/projects/bio220042p/djung2/jupyter-notebook/qc/quality_control_native_surface_slurm.py"
+PYTHON_SCRIPT="/ocean/projects/bio220042p/djung2/jupyter-notebook/082625_exvivo_quality_control/qc/quality_control_native_surface_slurm.py"
+
+# Set paths required for workbench analysis
+WB_SURFACES_PATH = "/ocean/projects/bio220042p/djung2/data/exvivo_voxel_up_and_down/"
 
 # Load required modules (adjust for your cluster)
 module load anaconda3
 conda activate ${CONDA_ENV_NAME}    
 
 # Create logs directory if it doesn't exist
-mkdir -p logs
+#mkdir -p logs
 
 # Validate paths exist
 if [[ ! -d "${BASE_PATH}" ]]; then
