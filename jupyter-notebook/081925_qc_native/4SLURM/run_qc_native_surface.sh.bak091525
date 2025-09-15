@@ -3,15 +3,18 @@
 #SBATCH --job-name=surface_analysis
 #SBATCH --output=logs/surface_analysis_%A_%a.out
 #SBATCH --error=logs/surface_analysis_%A_%a.err
-#SBATCH --array=1# Replace N with actual number of subjects
+#SBATCH --array=1-17 # Replace N with actual number of subjects
 #SBATCH --time=00:30:00
-#SBATCH --ntasks-per-node=8 # this should be 16 for the I54, which is 10GB in file as it has two hemisphsers
+#SBATCH --ntasks-per-node=8
 #SBATCH --partition=RM-shared
 
-CONDA_ENV_NAME="niwrapenv"
+CONDA_ENV_NAME="niwrapenv" #this has workbench 
 # Set base path where all subject folders are located
-BASE_PATH="/ocean/projects/bio220042p/djung2/data/exvivo_mod_I54only"
-PYTHON_SCRIPT="/ocean/projects/bio220042p/djung2/code/082625_exvivo_quality_control/qc/QC_without_workbench/quality_control_native_surface_slurm.py"
+BASE_PATH="/ocean/projects/bio220042p/djung2/data/exvivo_mod"
+PYTHON_SCRIPT="/ocean/projects/bio220042p/djung2/jupyter-notebook/082625_exvivo_quality_control/qc/quality_control_native_surface_slurm.py"
+
+# Set paths required for workbench analysis
+WB_SURFACES_PATH = "/ocean/projects/bio220042p/djung2/data/exvivo_voxel_up_and_down/"
 
 # Load required modules (adjust for your cluster)
 module load anaconda3
@@ -61,16 +64,9 @@ else
     echo "Found: ${SUBJECT_DIR}/mri/native.nii"
 fi
 
-# Store current directory
-ORIGINAL_DIR=$(pwd)
-
 # Check each hemisphere
 PROCESSED_COUNT=0
-OVERALL_SUCCESS=true
-
 for hemi in "${HEMISPHERES[@]}"; do
-    echo "=== Checking hemisphere: ${hemi} ==="
-    
     # FIXED: Added missing coordinate files
     HEMI_FILES=(
         "${SUBJECT_DIR}/${hemi}.inf.32k_fs_LR.surfnorm.func.gii"
@@ -102,8 +98,7 @@ for hemi in "${HEMISPHERES[@]}"; do
         echo "Changing to script directory..."
         if ! cd $(dirname ${PYTHON_SCRIPT}); then
             echo "ERROR: Failed to change to script directory: $(dirname ${PYTHON_SCRIPT})"
-            OVERALL_SUCCESS=false
-            break
+            exit 1
         fi
         
         echo "Running: python3 ${PYTHON_SCRIPT} ${SUBJECT_NAME} ${BASE_PATH} ${hemi}"
@@ -112,27 +107,17 @@ for hemi in "${HEMISPHERES[@]}"; do
             ((PROCESSED_COUNT++))
         else
             echo "ERROR: Python script failed for subject: ${SUBJECT_NAME}, hemisphere: ${hemi}"
-            OVERALL_SUCCESS=false
-            # Don't exit immediately - continue with other hemisphere
+            exit 1
         fi
-        
-        # Return to original directory after each hemisphere processing
-        cd "${ORIGINAL_DIR}"
-        echo "Returned to original directory: ${ORIGINAL_DIR}"
     else
         echo "Skipping ${hemi} hemisphere - required files not found:"
         printf '  Missing: %s\n' "${MISSING_FILES[@]}"
     fi
-    
-    echo "=== Finished checking hemisphere: ${hemi} ==="
 done
 
 # Final status check
 if [[ ${PROCESSED_COUNT} -eq 0 ]]; then
     echo "WARNING: No hemispheres were processed for subject ${SUBJECT_NAME}"
-    exit 1
-elif [[ "$OVERALL_SUCCESS" = false ]]; then
-    echo "ERROR: Some hemispheres failed processing for subject ${SUBJECT_NAME}. Processed: ${PROCESSED_COUNT}"
     exit 1
 else
     echo "SUCCESS: Processed ${PROCESSED_COUNT} hemisphere(s) for subject ${SUBJECT_NAME}"
