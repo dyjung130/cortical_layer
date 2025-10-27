@@ -1,2 +1,6 @@
 *.npy
 *.json
+*.pkl
+*.png
+*.jpeg
+*.tiff
