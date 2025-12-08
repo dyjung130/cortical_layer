@@ -7,6 +7,48 @@ import sys
 import warnings
 warnings.filterwarnings("ignore")
 
+
+
+#parcellation of the data based on the given atlas (atlas_data).
+def parcellate_data(data,atlas_data):
+    """
+    data: numpy array
+    atlas_data: numpy array
+    hemisphere: string
+    """
+
+    #parcellate data
+    len_unique = len(np.unique(atlas_data[atlas_data != 0]))
+    data_parc = np.zeros((len_unique))
+  
+    for i in range(len_unique):
+        parcel_data = data[atlas_data == i+1]
+        # First remove NaN values
+        parcel_data = parcel_data[~np.isnan(parcel_data)]
+        if len(parcel_data) == 0:
+            data_parc[i] = 0
+            continue
+        # Calculate mean and std of non-NaN values
+        parcel_data_mean = np.nanmean(parcel_data)
+        parcel_data_std = np.nanstd(parcel_data)
+        # Keep only values within 2 std of mean
+        # This keeps values that are strictly less than 2*std from the mean.
+        # If the intent is to include values *within* 2 std (inclusive), then <= should be used instead of <.
+        # Additionally, if the standard deviation is zero, this will remove all but the exact mean.
+        # This is a correct method to identify and filter outliers by the classic definition, but may not work as expected if parcel_data_std == 0 or parcel_data has few elements.
+
+        mask = np.abs(parcel_data - parcel_data_mean) < (2 * parcel_data_std)
+        filtered_data = parcel_data[mask]
+        # Calculate final mean of filtered data
+        if len(filtered_data) > 0:
+            data_parc[i] = np.nanmean(filtered_data)
+        else:
+            print(data[atlas_data == i+1])
+            print('no data',i)
+            data_parc[i] = 0
+    return data_parc
+
+
 #this is a function to compute the centroid distances of all structures to left and right thalamus in a parcellated image 
 #using the Tian parcellation volumetric atlas
 def compute_centroid_distances(parcellated_img_path, thalamus_lh_label, thalamus_rh_label):
