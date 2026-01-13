@@ -1,18 +1,70 @@
 # for registration data
-from scipy.spatial.distance import cdist
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import warnings
+from PIL import Image
 import nibabel as nib
 import numpy as np
-import os
-import sys
-import warnings
+from scipy.spatial.distance import cdist
+
 warnings.filterwarnings("ignore")
-import subprocess
-import json
-import tempfile
 
+#NOTE: 
+def clean_thickness_data(data_array):
+    """Clean NaN and Inf values from array using masked arrays."""
+    masked_array = np.ma.masked_invalid(data_array)
+    return np.array(masked_array.filled(0))
 
+#LOAD HCP THICKNESS DATA (ONLY TOTAL THICKNESS)
+def load_thickness_hcp_data(base_dir, subject_dir, hemi, suffix=None):
+    """Load thickness measurements for HCP data."""
+    file_stub = f"{base_dir}{subject_dir}/{subject_dir}."
+    if hemi == 'lh':
+        file_path = file_stub + ("L.thickness.32k_" + suffix + "_fwhm_fs_LR.shape.gii" if suffix is not None else "L.thickness.32k_fs_LR.shape.gii")
+    else:
+        file_path = file_stub + ("R.thickness.32k_" + suffix + "_fwhm_fs_LR.shape.gii" if suffix is not None else "R.thickness.32k_fs_LR.shape.gii")
 
-#parcellation of the data based on the given atlas (atlas_data).
+    return {'total': nib.load(file_path).darrays[0].data}
+
+#LOAD EX VIVO THICKNESS DATA (TOTAL, INFRAGRANULAR, SUPRAGRANULAR THICKNESS)
+def load_thickness_exvivo_data(base_dir, subject_dir, hemi, suffix=None):
+    """Load thickness measurements for ex vivo data."""
+    file_stub = f'{base_dir}{subject_dir}/{hemi}.thickness.'
+        
+    file_path_infra = file_stub + f'wm.inf.32k_{suffix}_fwhm_fs_LR.shape.gii' if suffix is not None else file_stub + 'wm.inf.32k_fs_LR.shape.gii'
+    file_path_supra = file_stub + f'inf.pial.32k_{suffix}_fwhm_fs_LR.shape.gii' if suffix is not None else file_stub + 'inf.pial.32k_fs_LR.shape.gii'
+    file_path_total = file_stub + f'32k_{suffix}_fwhm_fs_LR.shape.gii' if suffix is not None else file_stub + '32k_fs_LR.shape.gii'
+   
+    return {
+        'infra': nib.load(file_path_infra).darrays[0].data,
+        'supra': nib.load(file_path_supra).darrays[0].data,
+        'total': nib.load(file_path_total).darrays[0].data
+    }
+
+def load_thickness_bigbrain_data(base_dir, hemi):
+    """Load thickness measurements from BigBrain."""
+    return {
+        'infra': nib.load(f'{base_dir}/{hemi}.3-6.32k.shape.gii').darrays[0].data,  # layers 4,5,6 (ex vivo style)
+        'supra': nib.load(f'{base_dir}/{hemi}.0-3.32k.shape.gii').darrays[0].data,  # layers 1,2,3
+        'total': nib.load(f'{base_dir}/{hemi}.0-6.32k.shape.gii').darrays[0].data   # all layers
+    }
+
+def calculate_derived_measurements(thickness_data):
+    """Calculate derived thickness measurements."""
+    return {
+        'relative': clean_thickness_data(np.divide(thickness_data['supra'], thickness_data['infra'],
+                                         out=np.zeros_like(thickness_data['supra']), where=thickness_data['infra'] != 0)),
+        'ratio_supra': clean_thickness_data(np.divide(thickness_data['supra'], thickness_data['infra'] + thickness_data['supra'],
+                                            out=np.zeros_like(thickness_data['supra']), where=thickness_data['infra'] + thickness_data['supra'] != 0)),
+        'ratio_infra': clean_thickness_data(np.divide(thickness_data['infra'], thickness_data['infra'] + thickness_data['supra'],
+                                            out=np.zeros_like(thickness_data['infra']), where=thickness_data['infra'] + thickness_data['supra'] != 0)),
+        'diff': clean_thickness_data((thickness_data['infra'] - thickness_data['supra']) / (thickness_data['infra'] + thickness_data['supra']))
+    }
+
+#NOTE parcellation of the data based on the given atlas (atlas_data).
 def parcellate_data(data,atlas_data):
     """
     data: numpy array
@@ -35,11 +87,6 @@ def parcellate_data(data,atlas_data):
         parcel_data_mean = np.nanmean(parcel_data)
         parcel_data_std = np.nanstd(parcel_data)
         # Keep only values within 2 std of mean
-        # This keeps values that are strictly less than 2*std from the mean.
-        # If the intent is to include values *within* 2 std (inclusive), then <= should be used instead of <.
-        # Additionally, if the standard deviation is zero, this will remove all but the exact mean.
-        # This is a correct method to identify and filter outliers by the classic definition, but may not work as expected if parcel_data_std == 0 or parcel_data has few elements.
-
         mask = np.abs(parcel_data - parcel_data_mean) < (2 * parcel_data_std)
         filtered_data = parcel_data[mask]
         # Calculate final mean of filtered data
@@ -52,7 +99,7 @@ def parcellate_data(data,atlas_data):
     return data_parc
 
 
-#this is a function to compute the centroid distances of all structures to left and right thalamus in a parcellated image 
+#NOTE: This is a function to compute the centroid distances of all structures to left and right thalamus in a parcellated image 
 #using the Tian parcellation volumetric atlas
 def compute_centroid_distances(parcellated_img_path, thalamus_lh_label, thalamus_rh_label):
     """
@@ -110,7 +157,7 @@ def compute_centroid_distances(parcellated_img_path, thalamus_lh_label, thalamus
     }
  
 
-#wrapper function for spin test (because the gradient analysis code and enigma use different python version 3.9 vs 3.11)
+#NOTE: Wrapper function for spin test (because the gradient analysis code and enigma use different python version 3.9 vs 3.11)
 def run_enigma_spin_test(map1, map2, n_rot=1000):
     """
     Run ENIGMA spin test using lami environment
@@ -196,3 +243,57 @@ def run_enigma_spin_test(map1, map2, n_rot=1000):
             os.remove(map2_file)
         except:
             pass
+
+
+
+
+
+
+
+def stitch_images_in_folder(savepath, image_names, outname='stitched.png', direction='horizontal'):
+
+    # Example usage:
+    # png_files = [f"{gene}.png" for gene in GENE_NAMES]
+    # stitch_images_in_folder(savepath, png_files, outname='gene_exp_stitched.png', direction='horizontal')
+
+
+
+    """
+    Stitch together PNG images in savepath, either horizontally or vertically, and save as one PNG.
+    
+    Args:
+        savepath (str): Folder containing the images.
+        image_names (sequence): Iterable of PNG file names (e.g., ["PVALB.png",...])
+        outname (str): Output filename for the stitched PNG.
+        direction ('horizontal' or 'vertical'): Direction to stitch the images.
+    """
+    # Load all images
+    images = [Image.open(os.path.join(savepath, f)) for f in image_names if os.path.splitext(f)[-1] == ".png" and os.path.exists(os.path.join(savepath, f))]
+    print(images)
+    if not images:
+        print("No PNG files were found to stitch.")
+        return None
+
+    if direction == 'horizontal':
+        total_width = sum(im.width for im in images)
+        max_height = max(im.height for im in images)
+        stitched_image = Image.new('RGBA', (total_width, max_height), (255, 255, 255, 0))
+        x_offset = 0
+        for im in images:
+            stitched_image.paste(im, (x_offset, 0))
+            x_offset += im.width
+    elif direction == 'vertical':
+        total_height = sum(im.height for im in images)
+        max_width = max(im.width for im in images)
+        stitched_image = Image.new('RGBA', (max_width, total_height), (255,255,255,0))
+        y_offset = 0
+        for im in images:
+            stitched_image.paste(im, (0, y_offset))
+            y_offset += im.height
+    else:
+        raise ValueError("direction must be 'horizontal' or 'vertical'.")
+
+    output_png = os.path.join(savepath, outname)
+    stitched_image.save(output_png)
+    print(f"Saved stitched image as {output_png}")
+    return output_png
