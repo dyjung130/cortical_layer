@@ -6,6 +6,9 @@ import os
 import sys
 import warnings
 warnings.filterwarnings("ignore")
+import subprocess
+import json
+import tempfile
 
 
 
@@ -106,3 +109,90 @@ def compute_centroid_distances(parcellated_img_path, thalamus_lh_label, thalamus
         'dist_rh': [float(d) for d in dist_rh_arr]
     }
  
+
+#wrapper function for spin test (because the gradient analysis code and enigma use different python version 3.9 vs 3.11)
+def run_enigma_spin_test(map1, map2, n_rot=1000):
+    """
+    Run ENIGMA spin test using lami environment
+    """
+    # Create temp files
+    with tempfile.NamedTemporaryFile(suffix='.npy', delete=False) as f1:
+        map1_file = f1.name
+        np.save(map1_file, map1)
+    
+    with tempfile.NamedTemporaryFile(suffix='.npy', delete=False) as f2:
+        map2_file = f2.name
+        np.save(map2_file, map2)
+    
+    try:
+        # Call lami environment's Python
+        result = subprocess.run([
+            'conda', 'run', '-n', 'lami', 'python',
+            'enigma_spin_test.py',
+            map1_file,
+            map2_file,
+            str(n_rot)
+        ], capture_output=True, text=True)
+        
+        # Debug: print everything if there's an issue
+        if result.returncode != 0:
+            print("=== Script failed ===")
+            print("STDOUT:", result.stdout)
+            print("STDERR:", result.stderr)
+            raise RuntimeError(f"ENIGMA script failed with return code {result.returncode}")
+        
+        # Get stdout and find JSON
+        stdout = result.stdout.strip()
+        
+        if not stdout:
+            print("=== Empty output ===")
+            print("STDERR:", result.stderr)
+            raise RuntimeError("ENIGMA spin test returned empty output")
+        
+        # Find the line that starts with { and ends with }
+        json_line = None
+        for line in stdout.split('\n'):
+            line = line.strip()
+            if line.startswith('{') and line.endswith('}'):
+                json_line = line
+                break
+        
+        if json_line is None:
+            print("=== Could not find JSON in output ===")
+            print("Full STDOUT:")
+            print(stdout)
+            print("\nSTDERR:")
+            print(result.stderr)
+            raise ValueError("No valid JSON found in output")
+        
+        # Parse the JSON
+        try:
+            output = json.loads(json_line)
+        except json.JSONDecodeError as e:
+            print("=== JSON decode error ===")
+            print("Tried to parse:", json_line)
+            print("Error:", str(e))
+            raise
+        
+        # Check if the script reported an error
+        if not output.get('success', True):
+            raise RuntimeError(f"ENIGMA error: {output.get('error', 'Unknown error')}")
+        
+        return output['p_value'], np.array(output['null_dist'])
+    
+    except subprocess.CalledProcessError as e:
+        print("=== Subprocess error ===")
+        print("STDOUT:", e.stdout)
+        print("STDERR:", e.stderr)
+        raise
+    
+    finally:
+        # Cleanup
+        try:
+            os.remove(map1_file)
+        except:
+            pass
+        try:
+            os.remove(map2_file)
+        except:
+            pass
