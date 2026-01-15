@@ -9,6 +9,11 @@ from PIL import Image
 import nibabel as nib
 import numpy as np
 from scipy.spatial.distance import cdist
+from brainspace.gradient import GradientMaps
+from brainspace.utils.parcellation import map_to_labels
+from scipy.linalg import orthogonal_procrustes
+from scipy.stats import spearmanr
+import yaspy
 
 warnings.filterwarnings("ignore")
 
@@ -157,6 +162,49 @@ def compute_centroid_distances(parcellated_img_path, thalamus_lh_label, thalamus
     }
  
 
+
+
+def calculate_gradients_from_brainspace(data2plot, mask_indices, atlas_data, hemisphere_mask, n_components, g_dimension_reduction='pca', g_sparsity = 0.9, g_kernel='normalized_angle'):
+    """Process gradient maps for one hemisphere"""
+    grad_all = []
+    
+    
+    # Fit gradient maps
+    gm = GradientMaps(n_components, approach=g_dimension_reduction, kernel=g_kernel)
+    
+    if np.isnan(mask_indices).all():
+        print('no mask')
+        gm.fit(np.nan_to_num(data2plot, 0),sparsity = g_sparsity)#sparsity density is 0.9 by default
+    else:
+        mask = np.ones(data2plot.shape[0], dtype=bool)
+        mask[mask_indices] = False
+        gm.fit(data2plot, sparsity = g_sparsity)
+
+    # Process gradients
+    grad = []
+    
+    #for each gradient component..
+    for j in range(n_components):
+
+        data_len = len(data2plot)
+        if np.isnan(mask_indices).all():
+            tmp_gm = gm.gradients_[:,j]
+        else:
+            tmp_gm = np.full((data_len, 1), np.nan)
+            tmp_gm[mask] = gm.gradients_[:,j].reshape(-1,1)
+            tmp_gm = tmp_gm.ravel()
+            
+        atlas_slice = atlas_data
+        min_val = np.min(atlas_slice[atlas_slice != 0])
+        max_val = np.max(atlas_slice[atlas_slice != 0])
+        #print(f"Atlas range: {min_val}-{max_val}")
+
+        grad.append(map_to_labels(tmp_gm, atlas_slice, mask=hemisphere_mask, 
+                                fill=np.nan))#, source_lab=np.arange(min_val,max_val+1)))
+
+    return gm, grad
+
+
 #NOTE: Wrapper function for spin test (because the gradient analysis code and enigma use different python version 3.9 vs 3.11)
 def run_enigma_spin_test(map1, map2, n_rot=1000):
     """
@@ -246,6 +294,59 @@ def run_enigma_spin_test(map1, map2, n_rot=1000):
 
 
 
+
+#this is the main funciton used for gradient alignment -092525 DJ
+def align_gradients(X,Y,reflection=False,rotation=False):
+    """Align source gradients to target gradients
+        X: source gradients
+        Y: target gradients
+    """
+    
+    if len(X) != len(Y):
+        raise ValueError("Lists must be same length")
+    
+    #set nan to 0
+    X[np.isnan(X)] = 0
+    Y[np.isnan(Y)] = 0
+
+    print('X',X.shape)
+    print('Y',Y.shape)
+
+    #center the matrix
+    X_centered = X - np.mean(X, axis=0)
+    Y_centered = Y - np.mean(Y, axis=0)
+    R, _ = orthogonal_procrustes(X_centered, Y_centered)
+
+    if reflection == True and rotation == False:
+        sign_matrix = np.sign(np.diag(R))  
+        sign_transform = np.diag(sign_matrix)
+        X_sign_corrected = X_centered @ sign_transform + np.mean(Y, axis=0)
+        return X_sign_corrected, sign_transform
+    elif reflection == True and rotation == True:
+        X = X_centered @ R + np.mean(Y, axis=0)
+        return X, R
+    else:
+        return X, Y
+   
+
+def create_hemisphere_plots(grad_all_aligned, surf_file, hemi, N_components_plot,color_ranges,cmap='RdBu_r'):
+    """Create plots for one hemisphere"""
+    plotters = []
+
+    for pc in range(N_components_plot):
+        plotter = yaspy.Plotter(surf_file, hemi=hemi)
+        #[0] is some radii parameter I used before.. 
+        #m = np.max(np.abs(([grad_all_aligned[0][pc]])))
+        # Use percentiles but have the color scale centered at zero
+        data = grad_all_aligned[0][:,pc]
+        vmax = np.percentile(np.abs(data), 95)
+        vmin = -vmax
+        color_ranges[pc] = vmax
+        overlay = plotter.overlay(data, cmap=cmap, alpha=1, vmin=vmin, vmax=vmax)
+        plotter.border(grad_all_aligned[0][:,pc], alpha=0)
+        plotters.append([plotter.screenshot("lateral"), plotter.screenshot("medial"), overlay])
+        
+    return plotters
 
 
 
