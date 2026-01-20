@@ -1,18 +1,37 @@
 # for registration data
+
+# Standard library imports
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import warnings
-from PIL import Image
-import nibabel as nib
+import threading
+import concurrent.futures
+import logging
+
 import numpy as np
+import matplotlib.pyplot as plt
+from scipy.stats import pearsonr, spearmanr
+
+# Scientific computing/data handling
+import numpy as np
+import nibabel as nib
+
+# Image I/O
+from PIL import Image
+
+# Distance, statistics, linear algebra
 from scipy.spatial.distance import cdist
-from brainspace.gradient import GradientMaps
-from brainspace.utils.parcellation import map_to_labels
 from scipy.linalg import orthogonal_procrustes
 from scipy.stats import spearmanr
+
+# Brainspace (gradient embedding & parcellation utilities)
+from brainspace.gradient import GradientMaps
+from brainspace.utils.parcellation import map_to_labels
+
+# Visualization (yaspy surface plotting)
 import yaspy
 
 warnings.filterwarnings("ignore")
@@ -398,3 +417,291 @@ def stitch_images_in_folder(savepath, image_names, outname='stitched.png', direc
     stitched_image.save(output_png)
     print(f"Saved stitched image as {output_png}")
     return output_png
+
+
+
+
+# ==== 5. COMPUTE SPEARMAN'S CORRELATION ====
+def compute_spearman_matrix(X, Y):
+    """
+    X: shape (n_parcels, n_x_features)
+    Y: shape (n_parcels, n_y_features)
+    Returns: corr & p-value matrices: shape (n_x_features, n_y_features)
+    """
+    n_x, n_y = X.shape[1], Y.shape[1]
+    corrs = np.zeros((n_x, n_y))
+    ps = np.zeros_like(corrs)
+    for i in range(n_x):
+        for j in range(n_y):
+            r, p = spearmanr(X[:, i], Y[:, j], nan_policy='omit')
+            corrs[i, j] = r
+            ps[i, j] = p
+    return corrs, ps
+
+# ==== 6. SPINTEST SPEARMAN'S CORRELATION ====
+def compute_spintest_matrix(X, Y, hemi, max_workers=3):
+    """
+    X: shape (n_parcels, n_x_features)
+    Y: shape (n_parcels, n_y_features)
+    Returns: corr & p-value matrices: shape (n_x_features, n_y_features)
+    """
+    # Redundant import removed, already imported at module level
+    n_x, n_y = X.shape[1], Y.shape[1]
+    corrs = np.zeros((n_x, n_y))
+    ps = np.zeros_like(corrs)
+
+    def spintest_job(args):
+        i, j = args
+        if hemi == 'lh':
+            map1 = np.concatenate((X[:, i], np.full(len(X[:, i]), np.nan)))
+            map2 = np.concatenate((Y[:, j], np.full(len(Y[:, j]), np.nan)))
+        else:
+            map1 = np.concatenate((np.full(len(X[:, i]), np.nan), X[:, i]))
+            map2 = np.concatenate((np.full(len(Y[:, j]), np.nan), Y[:, j]))
+
+        p_spin, null_dist = run_enigma_spin_test(map1, map2, n_rot=1000)
+        return (i, j, p_spin)
+
+    jobs = [(i, j) for i in range(n_x) for j in range(n_y)]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for i, j, p_spin in executor.map(spintest_job, jobs):
+            ps[i, j] = p_spin
+    return ps
+
+
+
+def plot_component_correlation(
+    data,
+    n_components=3,
+    sparsity_index=0,
+    vmin=-0.8,
+    vmax=0.8,
+    figsize_per_component=(4, 4),
+    colormap='RdBu_r',
+    fontsize=14,
+    show_values=True,
+    show_significance=False,
+    alpha=0.05,
+    corr_method='pearson',
+    do_spin_test=False,
+    hemi='lh',
+    savepath=None
+):
+    """
+    Plot correlation matrix for each gradient component across metrics, showing only the lower triangle.
+
+    Parameters
+    ----------
+    data : dict
+        Dictionary of aligned gradients; keys are metrics, values are lists with arrays
+        of shape (n_vertices, n_components).
+    n_components : int
+        Number of components to plot.
+    sparsity_index : int
+        Index into the list for each metric.
+    vmin, vmax : float
+        Color scale limits.
+    figsize_per_component : tuple
+        Size of each subplot (width, height).
+    colormap : str
+        Matplotlib colormap name.
+    fontsize : int
+        Font size for labels and titles.
+    show_values : bool
+        Whether to display correlation values on the heatmap.
+    show_significance : bool
+        Whether to add asterisks for significant correlations.
+    alpha : float
+        Significance threshold (only used if show_significance=True).
+    corr_method : str
+        'pearson' or 'spearman' correlation.
+
+    Returns
+    -------
+    None
+    """
+
+    # Metric labels
+    keys = list(data.keys())
+    labels = [
+        "HCP: total",
+        "Ex: total",
+        "Ex: supra",
+        "Ex: infra",
+        "Ex: supra/total",
+        "Ex: supra/infra"
+    ]
+
+    n_metrics = len(keys)
+    sample_shape = data[keys[0]][sparsity_index].shape
+
+    print(f"Metrics: {labels}")
+    print(f"Array shape: {sample_shape} (n_vertices x n_components)")
+
+    # Create figure
+    fig, axes = plt.subplots(
+        1, n_components,
+        figsize=(n_components * figsize_per_component[0], figsize_per_component[1]),
+        squeeze=False
+    )
+
+    corrmat_list = []
+    pmat_list = []
+    pmat_spin_list = []
+
+    for component in range(n_components):
+        # Extract component from each metric
+        try:
+            comp_matrix = np.column_stack([
+                data[key][sparsity_index][:, component] for key in keys
+            ])
+        except IndexError as e:
+            print(f"Component {component} out of bounds for shape {sample_shape}.")
+            raise e
+
+        print(f"Component {component} matrix shape: {comp_matrix.shape}")
+
+        # Compute correlation and p-values
+        n = comp_matrix.shape[0]
+        corrmat = np.zeros((n_metrics, n_metrics))
+        pmat = np.ones((n_metrics, n_metrics))
+        pmat_spin = np.ones((n_metrics, n_metrics))
+
+        for i in range(n_metrics):
+            for j in range(n_metrics):
+                if i < j:
+                    # Remove top half
+                    corrmat[i, j] = np.nan
+                    pmat[i, j] = np.nan
+                    pmat_spin[i, j] = np.nan
+                elif i == j:
+                    corrmat[i, j] = np.nan
+                    pmat[i, j] = np.nan
+                    pmat_spin[i, j] = np.nan
+                else:
+                    x, y = comp_matrix[:, i], comp_matrix[:, j]
+                    try:
+                        if corr_method == 'spearman':
+                            # Ensure x and y are (vertices, 1) by reshaping if (vertices,)
+                            corr, p = spearmanr(x, y, nan_policy='omit')
+                        else:
+                            corr, p = pearsonr(x, y)
+
+                        if do_spin_test:
+                            try:
+                                # Added print for debugging
+                                print('x',x.shape,'y',y.shape)
+                                print(f"Running spin test for ({i},{j}), hemi={hemi}")
+                                if x.ndim == 1:
+                                    x = x.reshape(-1, 1)
+                                if y.ndim == 1:
+                                    y = y.reshape(-1, 1)
+                                p_spin = compute_spintest_matrix(x, y, hemi, max_workers=4)
+                            except Exception as spin_e:
+                                print(f"Spin test failed for ({i},{j}): {spin_e}")
+                                p_spin = np.nan
+                        else:
+                            p_spin = np.nan
+                    except Exception as e:
+                        print(f"Correlation calculation failed for ({i},{j}): {e}")
+                        corr, p = np.nan, np.nan
+                        p_spin = np.nan
+                    corrmat[i, j] = corr
+                    pmat[i, j] = p
+                    pmat_spin[i, j] = p_spin
+        pmat_list.append(pmat)
+        pmat_spin_list.append(pmat_spin)
+        corrmat_list.append(corrmat)
+        '''
+        # For each layer group (column), do FDR correction across the features (rows)
+        for i in range(spearman_ps_lh.shape[1]):
+            pvals = spearman_ps_lh[:, i]
+            rej, pvals_fdr, _, _ = multipletests(pvals, alpha=ALPHA, method='fdr_bh')
+            spearman_ps_fdr_lh[:, i] = pvals_fdr
+            spearman_signif_lh[:, i] = rej  # True for significant
+        '''
+
+        # Plot heatmap
+        ax = axes[0, component]
+        im = ax.imshow(corrmat, cmap=colormap, vmin=vmin, vmax=vmax)
+
+        # Put x and y tick marks and labels
+        ax.set_xticks(np.arange(n_metrics))
+        ax.set_yticks(np.arange(n_metrics))
+        ax.set_xticklabels(labels, rotation=90, ha='center', fontsize=fontsize)
+        ax.set_yticklabels(labels, fontsize=fontsize)
+        ax.set_title(f'G{component+1}', fontsize=fontsize+2, fontweight='bold')
+        ax.tick_params(axis='both', which='major', labelsize=fontsize)
+        # Add tick marks with minor ticks for better visual clarity
+        ax.tick_params(axis='x', which='minor', length=4, color='gray')
+        ax.tick_params(axis='y', which='minor', length=4, color='gray')
+        ax.set_xticks(np.arange(n_metrics)-0.5, minor=True)
+        ax.set_yticks(np.arange(n_metrics)-0.5, minor=True)
+        ax.grid(False)  # No grid, just ticks
+
+        # Annotate values, only on lower triangle
+        if show_values or show_significance:
+            for i in range(n_metrics):
+                for j in range(n_metrics):
+                    if i <= j:
+                        # Skip top triangle and diagonal
+                        continue
+                    val = corrmat[i, j]
+                    if np.isnan(val):
+                        continue
+
+                    # Determine text color
+                    text_color = "white" if np.abs(val) > 0.5 else "black"
+
+                    # Build annotation text
+                    if show_values:
+                        annot = f"{val:.2f}"
+                    else:
+                        annot = ""
+
+                    # Add significance markers
+                    if show_significance and not np.isnan(pmat[i, j]):
+                        if do_spin_test:
+                            p_tmp = pmat_spin[i, j]
+                        else:
+                            p_tmp = pmat[i, j]
+                        if not np.isnan(p_tmp) and p_tmp < alpha:
+                            if p_tmp < 0.001:
+                                star = "***"
+                            elif p_tmp < 0.01:
+                                star = "**"
+                            else:
+                                star = "*"
+
+                            if show_values:
+                                annot += f"\n{star}"
+                            else:
+                                annot = star
+
+                    if annot:
+                        ax.text(
+                            j, i + 0.1, annot,
+                            ha='center', va='center',
+                            color=text_color,
+                            fontsize=fontsize * 0.7
+                        )
+
+        # Add colorbar
+        cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        cbar.set_label("Correlation", fontsize=fontsize-2, rotation=270, labelpad=15)
+        cbar.ax.tick_params(labelsize=fontsize)
+
+    plt.tight_layout()
+
+    if savepath is not None:
+        if not os.path.exists(savepath):
+            os.makedirs(savepath)
+        plt.savefig(os.path.join(savepath, "component_correlation.png"))
+        #save pspin and pmat to the savepath
+        np.save(os.path.join(savepath, "pmat_spin.npy"), pmat_spin_list)
+        np.save(os.path.join(savepath, "pmat.npy"), pmat_list)
+        np.save(os.path.join(savepath, "corrmat.npy"), corrmat_list)
+        return pmat_spin_list, pmat_list, corrmat_list, fig
+    else:
+        return pmat_spin_list, pmat_list, corrmat_list, fig
+    plt.show()
