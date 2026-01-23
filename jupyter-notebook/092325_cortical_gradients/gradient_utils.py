@@ -15,23 +15,16 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import pearsonr, spearmanr
 
-# Scientific computing/data handling
-import numpy as np
 import nibabel as nib
 
-# Image I/O
 from PIL import Image
 
-# Distance, statistics, linear algebra
 from scipy.spatial.distance import cdist
 from scipy.linalg import orthogonal_procrustes
-from scipy.stats import spearmanr
 
-# Brainspace (gradient embedding & parcellation utilities)
 from brainspace.gradient import GradientMaps
 from brainspace.utils.parcellation import map_to_labels
 
-# Visualization (yaspy surface plotting)
 import yaspy
 
 warnings.filterwarnings("ignore")
@@ -117,8 +110,6 @@ def parcellate_data(data,atlas_data):
         if len(filtered_data) > 0:
             data_parc[i] = np.nanmean(filtered_data)
         else:
-            print(data[atlas_data == i+1])
-            print('no data',i)
             data_parc[i] = 0
     return data_parc
 
@@ -182,17 +173,13 @@ def compute_centroid_distances(parcellated_img_path, thalamus_lh_label, thalamus
  
 
 
-
-def calculate_gradients_from_brainspace(data2plot, mask_indices, atlas_data, hemisphere_mask, n_components, g_dimension_reduction='pca', g_sparsity = 0.9, g_kernel='normalized_angle'):
+def calculate_gradients_from_brainspace(data2plot, mask_indices, atlas_data, hemisphere_mask, n_components, g_dimension_reduction='pca', g_sparsity = 0.9, g_kernel = 'normalized_angle'):
     """Process gradient maps for one hemisphere"""
     grad_all = []
-    
-    
     # Fit gradient maps
     gm = GradientMaps(n_components, approach=g_dimension_reduction, kernel=g_kernel)
     
     if np.isnan(mask_indices).all():
-        print('no mask')
         gm.fit(np.nan_to_num(data2plot, 0),sparsity = g_sparsity)#sparsity density is 0.9 by default
     else:
         mask = np.ones(data2plot.shape[0], dtype=bool)
@@ -201,10 +188,8 @@ def calculate_gradients_from_brainspace(data2plot, mask_indices, atlas_data, hem
 
     # Process gradients
     grad = []
-    
     #for each gradient component..
     for j in range(n_components):
-
         data_len = len(data2plot)
         if np.isnan(mask_indices).all():
             tmp_gm = gm.gradients_[:,j]
@@ -216,12 +201,59 @@ def calculate_gradients_from_brainspace(data2plot, mask_indices, atlas_data, hem
         atlas_slice = atlas_data
         min_val = np.min(atlas_slice[atlas_slice != 0])
         max_val = np.max(atlas_slice[atlas_slice != 0])
-        #print(f"Atlas range: {min_val}-{max_val}")
-
         grad.append(map_to_labels(tmp_gm, atlas_slice, mask=hemisphere_mask, 
                                 fill=np.nan))#, source_lab=np.arange(min_val,max_val+1)))
 
     return gm, grad
+
+   
+
+def unmap_gradient(grad_all_aligned, mask_indices, atlas_data, hemisphere_mask, start_idx, end_idx):
+    """Unmap gradients to atlas data"""
+    grad_all_unmapped = []
+    for i, gm in enumerate(gm_all):
+        grad = []
+        for j in range(N_components):
+            tmp_gm = gm.gradients_[:,j] if np.isnan(mask_indices).all() else \
+                    np.full(len(data2plot[i]), np.nan)
+            
+            # Apply mask if needed
+            if not np.isnan(mask_indices).all():
+                mask = np.ones(data2plot[i].shape[0], dtype=bool)
+                mask[mask_indices] = False
+                tmp_gm[mask] = gm.gradients_[:,j]
+            
+            # Map to atlas labels
+            atlas_slice = atlas_data[start_idx:end_idx]
+            nonzero = atlas_slice[atlas_slice != 0]
+            grad.append(label_to_map(tmp_gm, atlas_slice, mask=hemisphere_mask,
+                                    fill=np.nan, source_lab=np.arange(nonzero.min(), nonzero.max()+1)))
+    return grad
+
+def map_gradients(gm_all, data2plot, mask_indices, atlas_data, hemisphere_mask, start_idx, end_idx):
+    """Map gradients to atlas data"""
+    grad_all_aligned = []
+    for i, gm in enumerate(gm_all):
+        grad = []
+        for j in range(N_components):
+            # Get gradient data
+            tmp_gm = gm.gradients_[:,j] if np.isnan(mask_indices).all() else \
+                    np.full(len(data2plot[i]), np.nan)
+            
+            # Apply mask if needed
+            if not np.isnan(mask_indices).all():
+                mask = np.ones(data2plot[i].shape[0], dtype=bool)
+                mask[mask_indices] = False
+                tmp_gm[mask] = gm.gradients_[:,j]
+            
+            # Map to atlas labels
+            atlas_slice = atlas_data[start_idx:end_idx]
+            nonzero = atlas_slice[atlas_slice != 0]
+            grad.append(map_to_labels(tmp_gm, atlas_slice, mask=hemisphere_mask,
+                                    fill=np.nan, source_lab=np.arange(nonzero.min(), nonzero.max()+1)))
+        grad_all_aligned.append(grad)
+    return grad_all_aligned
+
 
 
 #NOTE: Wrapper function for spin test (because the gradient analysis code and enigma use different python version 3.9 vs 3.11)
@@ -327,9 +359,6 @@ def align_gradients(X,Y,reflection=False,rotation=False):
     #set nan to 0
     X[np.isnan(X)] = 0
     Y[np.isnan(Y)] = 0
-
-    print('X',X.shape)
-    print('Y',Y.shape)
 
     #center the matrix
     X_centered = X - np.mean(X, axis=0)
@@ -704,4 +733,166 @@ def plot_component_correlation(
         return pmat_spin_list, pmat_list, corrmat_list, fig
     else:
         return pmat_spin_list, pmat_list, corrmat_list, fig
+    plt.show()
+
+
+# Plot spearman
+def plot_spearman_bar(
+    spearman_corrs, 
+    spearman_ps_fdr, 
+    feature_ylabels, 
+    feature_xlabels,
+    fontsize=10,
+    colorize_ylabels=None,
+    do_sort= True
+):
+    """
+    Plot horizontal bar plot for Spearman correlations in 1xN columns.
+    
+    Args:
+        spearman_corrs:     N_features x N_columns array of correlation values
+        spearman_ps_fdr:    N_features x N_columns array of FDR p-values
+        FEATURE_YLABELS:    list or array of ytick (feature) labels, length N_features
+        layer_type_labels:  list of N_columns names for columns (titles)
+        fontsize:           int or float, all font size for axes/ticks/titles
+    """
+    # Sorting order for first column
+    if do_sort:
+        sort_order = np.argsort(spearman_corrs[:, 0])
+        ytick_labels = np.array(FEATURE_YLABELS)[sort_order]
+        if colorize_ylabels is not None:
+            colorize_ylabels = np.array(colorize_ylabels)[sort_order]
+        sorted_spearman_corrs = spearman_corrs[sort_order]
+        sorted_spearman_ps_fdr = spearman_ps_fdr[sort_order]
+    else:
+        sorted_spearman_corrs = spearman_corrs
+        sorted_spearman_ps_fdr = spearman_ps_fdr
+        ytick_labels = FEATURE_YLABELS
+        colorize_ylabels = colorize_ylabels
+
+    n_plots = sorted_spearman_corrs.shape[1]
+    n_features = sorted_spearman_corrs.shape[0]
+    nrows, ncols = 1, n_plots
+
+    fig_width_per_col = 2.0
+    fig_height_per_row = 0.22 * n_features
+
+    from matplotlib import gridspec
+
+    left_label_pad_inches = 1.15
+    fig = plt.figure(
+        figsize=(left_label_pad_inches + ncols * fig_width_per_col, fig_height_per_row)
+    )
+    gs = gridspec.GridSpec(
+        nrows=1,
+        ncols=ncols+1,
+        width_ratios=[left_label_pad_inches/fig_width_per_col] + [1]*ncols,
+        wspace=0.1
+    )
+    axes = []
+    for ci in range(ncols):
+        axes.append(fig.add_subplot(gs[0, ci+1]))
+    axes = np.array(axes)
+    
+    # Define combined direction & p bins as in original
+    p_bins = [0, 0.001, 0.01, 0.05, 1.0001]
+    p_bin_labels = ['<0.001', '<0.01', '<0.05', 'n.s.']
+    n_pbins = len(p_bins) - 1
+    n_total_bins = n_pbins * 2
+
+    from matplotlib.colors import ListedColormap
+    cmap_base = plt.get_cmap('coolwarm_r', 512)
+    neg_colors = [cmap_base(i) for i in np.linspace(1, 0.55, n_pbins)]
+    pos_colors = [cmap_base(i) for i in np.linspace(0, 0.45, n_pbins)]
+    all_colors = neg_colors + pos_colors
+    combo_cmap = ListedColormap(all_colors)
+
+    def get_dir_pbin(rvals, pvals, p_bins):
+        pbin = np.digitize(pvals, p_bins) - 1
+        pbin = np.clip(pbin, 0, n_pbins-1)
+        sign = (rvals > 0).astype(int)
+        combo_bin = pbin + sign * n_pbins
+        combo_bin = np.where(rvals == 0, pbin, combo_bin)
+        return combo_bin, pbin
+
+    for idx in range(ncols):
+        ax = axes[idx]
+        vals = sorted_spearman_corrs[:, idx]
+        pvals = sorted_spearman_ps_fdr[:, idx]
+
+        combo_bins, pbins = get_dir_pbin(vals, pvals, p_bins)
+        bar_colors = np.array([
+            combo_cmap(cb) if not (np.isnan(v) or np.isnan(pv)) else (0.6,0.6,0.6,1.0)
+            for cb, v, pv in zip(combo_bins, vals, pvals)
+        ])
+
+        ylocs = np.arange(n_features)
+        bars = ax.barh(
+            ylocs, vals, color=bar_colors,
+            edgecolor=None,
+            linewidth=0.4,
+            height=0.4
+        )
+        for i, (bar, pbin, v, pv) in enumerate(zip(bars, pbins, vals, pvals)):
+            if np.isnan(v) or np.isnan(pv):
+                continue
+            if p_bin_labels[pbin] != 'n.s.':
+                n_aster = n_pbins - pbin
+                asterisks = '*' * (n_aster-1)
+                bar_width = bar.get_width()
+                if bar_width >= 0:
+                    xloc = bar.get_x() + bar_width + 0.04
+                    align = 'left'
+                else:
+                    xloc = bar.get_x() + bar_width - 0.04
+                    align = 'right'
+                yloc = bar.get_y() + bar.get_height() / 4
+                ax.text(
+                    xloc, yloc,
+                    asterisks,
+                    va='center',
+                    ha=align,
+                    color='k',
+                    fontsize=fontsize,
+                    fontweight='bold'
+                )
+        ax.set_xlim([-1.5,1.5])
+        ax.set_xticks([-1, 0, 1])
+        ax.set_title(FEATURE_XLABELS[idx], fontsize=fontsize, fontweight='bold')
+        ax.set_yticks(ylocs)
+        if idx == 0:
+            if colorize_ylabels is not None:
+                # Set yticklabels individually with colors from colorize_ylabel
+                for ytick, label, color in zip(ax.get_yticks(), ytick_labels, colorize_ylabels):
+                    ax.annotate(
+                        label,
+                        xy=(0, ytick),
+                        xycoords=("axes fraction", "data"),
+                        xytext=(-10, 0),
+                        textcoords="offset points",
+                        ha='right', va='center',
+                        color=color,
+                        fontsize=fontsize
+                    )
+                ax.set_yticks(ax.get_yticks())  # Keep locations, but clear default text labels
+                ax.set_yticklabels([''] * len(ytick_labels))
+            else:
+                ax.set_yticklabels(ytick_labels, fontsize=fontsize)
+        else:
+            ax.set_yticklabels([])
+        ax.tick_params(axis='y', direction='out', length=2, width=2, left=True, labelsize=fontsize)
+        ax.tick_params(axis='x', direction='out', length=2, width=2, bottom=True, labelsize=fontsize)
+        ax.axvline(0, color='k', lw=1, ls='-')
+        ax.set_xlabel("Spatial Correlation", fontsize=fontsize)
+
+    # Optionally, add y axis only to the first axes, hide spines on left pad axis
+    pad_ax = fig.add_subplot(gs[0,0])
+    pad_ax.axis('off')
+    # [pad_ax.spines[side].set_visible(False) for side in ["top","bottom","left","right"]]
+
+    plt.subplots_adjust(
+        left=left_label_pad_inches/(left_label_pad_inches + ncols*fig_width_per_col), 
+        right=1, wspace=0.08
+    )
+    plt.tight_layout()
     plt.show()
