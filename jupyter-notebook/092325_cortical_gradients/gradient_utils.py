@@ -21,7 +21,7 @@ from PIL import Image
 
 from scipy.spatial.distance import cdist
 from scipy.linalg import orthogonal_procrustes
-
+from scipy.optimize import linear_sum_assignment, curve_fit
 from brainspace.gradient import GradientMaps
 from brainspace.utils.parcellation import map_to_labels
 
@@ -514,7 +514,9 @@ def plot_component_correlation(
     corr_method='pearson',
     do_spin_test=False,
     hemi='lh',
-    savepath=None
+    savepath=None,
+    labels=None,
+    title=None
 ):
     """
     Plot correlation matrix for each gradient component across metrics, showing only the lower triangle.
@@ -552,14 +554,15 @@ def plot_component_correlation(
 
     # Metric labels
     keys = list(data.keys())
-    labels = [
-        "HCP: total",
-        "Ex: total",
-        "Ex: supra",
-        "Ex: infra",
-        "Ex: supra/total",
-        "Ex: supra/infra"
-    ]
+    if labels is None:
+        labels = [
+            "HCP: total",
+            "Ex: total",
+            "Ex: supra",
+            "Ex: infra",
+            "Ex: supra/total",
+            "Ex: supra/infra"
+        ]
 
     n_metrics = len(keys)
     sample_shape = data[keys[0]][sparsity_index].shape
@@ -719,7 +722,8 @@ def plot_component_correlation(
         cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         cbar.set_label("Correlation", fontsize=fontsize-2, rotation=270, labelpad=15)
         cbar.ax.tick_params(labelsize=fontsize)
-
+    if title is not None:
+        fig.suptitle(title, fontsize=fontsize+2, fontweight='bold')
     plt.tight_layout()
 
     if savepath is not None:
@@ -735,6 +739,287 @@ def plot_component_correlation(
         return pmat_spin_list, pmat_list, corrmat_list, fig
     plt.show()
 
+def decompose_to_permutation_and_signs(R):
+    """
+    Decompose orthogonal matrix R into permutation + sign flips
+    
+    Parameters:
+    -----------
+    R : array (10, 10)
+        Orthogonal matrix from procrustes
+    
+    Returns:
+    --------
+    perm_idx : array (10,)
+        Permutation indices
+    signs : array (10,)
+        Sign flips (+1 or -1)
+    """
+    # Find the permutation by matching largest absolute values
+    abs_R = np.abs(R)
+    # Use Hungarian algorithm to find optimal assignment
+    row_ind, col_ind = linear_sum_assignment(-abs_R)
+    # Extract signs from the matched elements
+    signs = np.sign(R[row_ind, col_ind])
+    # col_ind gives us the permutation
+    perm_idx = col_ind
+    
+    return perm_idx, signs
+
+
+#this combines all pc components and pltos in the same figure (only one data type)
+def plot_component_correlation_across_sparsity(
+    data,
+    layer_type='total',
+    component = 0,
+    G_sparsity=0.9,
+    vmin=-0.9,
+    vmax=0.9,
+    figsize_per_component=(4,4),
+    colormap='RdBu_r'
+):
+    """
+    For each component up to n_components, collect the component for each metric in the aligned gradients dictionary,
+    compute their correlation matrix, and plot them in a single figure in columns (single row).
+
+    Args:
+        data (dict): Dictionary of aligned gradients; each key is a metric, each value is a list;
+                     the first item (index 0) is assumed to be an array with at least two dimensions,
+                     with columns representing components.
+        n_components (int): Number of components to plot.
+        vmin (float): Minimum value for color scale.
+        vmax (float): Maximum value for color scale.
+        figsize_per_component (tuple): Size of each subplot (width, height).
+        colormap (str): matplotlib colormap.
+
+    Returns:
+        None
+    """
+
+    def label_format(key):
+        """Format keys for LaTeX axis labels: main_subscript"""
+        if '_' in key:
+            main, sub = key.split('_', 1)
+            return fr"${main.capitalize()}_{{\mathrm{{{sub}}}}}$"
+        else:
+            return fr"${key.capitalize()}$"
+
+    keys = [layer_type]
+    labels = [layer_type]
+    n_metrics = len(keys)
+    
+    # Output the shape for debugging
+    #sample_shape = data[keys[0]][0].shape
+    #print(f"Example aligned gradients array shape (should be n_vertices x n_components): {sample_shape}")
+    fig, ax = plt.subplots(
+        1, 1,
+        figsize=( figsize_per_component[0], figsize_per_component[1])
+    )
+   
+    comp_matrix =[]#set this to HCP data
+    comp_matrix = data['total_hcp'][0][:,component]#this is the first sparsity (0.9)
+    layer_data = data[layer_type]
+
+    for sparsity_index in range(len(G_sparsity)):
+
+        # Extract the specified component from each *metric* for this sparsity and stack
+        try:
+            #for the sparsity other than 0.9 align the gradient maps to the first sparsity (0.9)
+            _ , R= align_gradients(layer_data[sparsity_index], layer_data[0],reflection=do_reflection, rotation=do_rotation)
+            
+            #decompse the transformation matrix (R) to permultation index and signs 102725 DJ
+            perm_idx, signs= decompose_to_permutation_and_signs(R)
+            
+            #reorder and flip the signs of the gradientmaps 102725 DJ
+            grad_aligned_ = layer_data[sparsity_index][:,perm_idx]*signs
+
+            #comp_matrix = np.column_stack((comp_matrix, layer_data[sparsity_index][:, component]))
+            comp_matrix = np.column_stack((comp_matrix, grad_aligned_[:,component]))
+                
+        except IndexError as e:
+            print(f"Component {component} is out of bounds for available gradient arrays. Sample shape: {sample_shape}")
+            raise e
+
+    #align gradients
+    corrmat = np.corrcoef(comp_matrix.T)
+    np.fill_diagonal(corrmat, np.nan)
+
+    im = ax.imshow(corrmat, cmap=colormap, vmin=vmin, vmax=vmax)
+    ax.set_xticks(np.arange(len(G_sparsity)+1))
+    ax.set_yticks(np.arange(len(G_sparsity)+1))
+    label_name_list = ['HCP 0.9'] + [f"EX {g}" for g in G_sparsity]
+    ax.set_xticklabels(label_name_list, rotation=90, ha='center')
+    ax.set_yticklabels(label_name_list)
+    ax.set_title(f'Component {component+1}')
+    
+    # Only add colorbar to each subplot (or just the last one, as preferred)
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    plt.title(layer_type.capitalize())
+    plt.tight_layout()
+    plt.show()
+
+
+
+def scatter_with_histograms(
+    x, y, xlabel_name, ylabel_name, marker_size=30, data_label_color=None, ax=None
+):
+    """
+    Generate a scatterplot with histograms on a given Axes (ax). 
+    If ax is not provided, create a new figure with marginal histograms.
+    Returns: fig, axes_dict, stats_dict
+    """
+    from scipy import stats as sp_stats
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    
+    # Helper function to format p-values
+    def format_pvalue(p):
+        """Format p-value: show actual value if >= 0.001, otherwise show '< 0.001'"""
+        if p < 0.001:
+            return "< 0.001"
+        else:
+            return f"= {p:.3f}"
+    
+    # Compute correlation
+    r, p = sp_stats.spearmanr(x, y)
+    print(f"{ylabel_name}: r={r:.2f}, p={p:.2e}")
+    
+    # Format p-value for display
+    p_formatted = format_pvalue(p)
+    
+    # Colors
+    if data_label_color is None:
+        data_label_color = ['#8E44AD' for _ in x]
+    font_size = max(int(marker_size * 0.50), 10)
+    tick_size = max(int(marker_size * 0.50), 8)
+    
+    # If an axis is passed, just draw scatter (no histograms, as in a multi-panel layout)
+    if ax is not None:
+        fig = ax.figure
+        axes = {'scatter': ax}
+        sns.scatterplot(x=x, y=y, alpha=1, s=marker_size, 
+                        c=data_label_color, edgecolor='black', ax=ax)
+        # Regression line
+        if len(x) > 1:
+            try:
+                slope, intercept = np.polyfit(x, y, 1)
+            except np.linalg.LinAlgError:
+                slope, intercept = 0, np.nan
+            x_mean, x_std = np.nanmean(x), np.nanstd(x)
+            x_window = 3.5 * x_std
+            x_lim = (x_mean - x_window, x_mean + x_window)
+            x_line = np.linspace(x_lim[0], x_lim[1], 100)
+            y_line = slope * x_line + intercept
+            ax.plot(x_line, y_line, color='black', linestyle='--', linewidth=max(1, marker_size // 10))
+        else:
+            x_lim = (np.nanmin(x), np.nanmax(x))
+            y_lim = (np.nanmin(y), np.nanmax(y))
+        
+        # Annotate correlation with formatted p-value
+        ax.text(0.04, 0.97, f'r={r:.2f}, p {p_formatted}',
+                   transform=ax.transAxes, va='top',
+                   fontsize=font_size, weight='bold', color='black')
+        
+        # Axis limits
+        if len(x) > 1:
+            y_mean, y_std = np.nanmean(y), np.nanstd(y)
+            y_window = 3.5 * y_std
+            y_lim = (y_mean - y_window, y_mean + y_window)
+        ax.set_xlim(x_lim)
+        ax.set_ylim(y_lim)
+        ax.set_xlabel(xlabel_name, fontsize=font_size, labelpad=2, weight='bold')
+        ax.set_ylabel(ylabel_name, fontsize=font_size, labelpad=2, weight='bold')
+        ax.tick_params(axis='both', which='major', labelsize=tick_size)
+        ax.grid(True, linestyle='--', alpha=0)
+        for spine in ax.spines.values():
+            spine.set_visible(True)
+            spine.set_linewidth(2.0)
+        stats_dict = {'r': r, 'p': p}
+        return fig, axes, stats_dict
+    
+    # If ax is None, draw as standalone figure with marginal histograms
+    fig = plt.figure(figsize=(4, 4))
+    gs = fig.add_gridspec(3, 3, hspace=0.12, wspace=0.12)
+    axes = {}
+    
+    # Main scatter plot
+    ax_scatter = fig.add_subplot(gs[1:, 0:2])
+    axes['scatter'] = ax_scatter
+    sns.scatterplot(x=x, y=y, alpha=1, s=marker_size, c=data_label_color, edgecolor='black', ax=ax_scatter)
+    
+    # Regression line
+    if len(x) > 1:
+        try:
+            slope, intercept = np.polyfit(x, y, 1)
+        except np.linalg.LinAlgError:
+            slope, intercept = 0, np.nan
+        x_mean, x_std = np.nanmean(x), np.nanstd(x)
+        x_window = 3.5 * x_std
+        x_lim = (x_mean - x_window, x_mean + x_window)
+        x_line = np.linspace(x_lim[0], x_lim[1], 100)
+        y_line = slope * x_line + intercept
+        ax_scatter.plot(x_line, y_line, color='black', linestyle='--', linewidth=max(1, marker_size // 10))
+    else:
+        x_lim = (np.nanmin(x), np.nanmax(x))
+        y_lim = (np.nanmin(y), np.nanmax(y))
+    
+    # Annotate correlation with formatted p-value
+    ax_scatter.text(0.04, 0.97, f'r={r:.2f}, p {p_formatted}',
+                    transform=ax_scatter.transAxes, va='top',
+                    fontsize=font_size, weight='bold', color='black')
+    
+    # Axis limits
+    if len(x) > 1:
+        y_mean, y_std = np.nanmean(y), np.nanstd(y)
+        y_window = 3.5 * y_std
+        y_lim = (y_mean - y_window, y_mean + y_window)
+    ax_scatter.set_xlim(x_lim)
+    ax_scatter.set_ylim(y_lim)
+    ax_scatter.set_xlabel(xlabel_name, fontsize=font_size, labelpad=1, weight='bold')
+    ax_scatter.set_ylabel(ylabel_name, fontsize=font_size, labelpad=1, weight='bold')
+    ax_scatter.tick_params(axis='both', which='major', labelsize=tick_size)
+    ax_scatter.grid(True, linestyle='--', alpha=0)
+    for spine in ax_scatter.spines.values():
+        spine.set_visible(True)
+        spine.set_linewidth(2.0)
+    
+    # Top histogram
+    ax_histx = fig.add_subplot(gs[0, 0:2])
+    axes['histx'] = ax_histx
+    sns.histplot(x=x, bins=50, kde=True, color='#8E44AD', ax=ax_histx, stat='density', alpha=1)
+    ax_histx.set_xlim(x_lim)
+    hist_ylim = ax_histx.get_ylim()
+    ax_histx.set_ylim(0, hist_ylim[1]*3)
+    ax_histx.set(xlabel='', ylabel='')
+    ax_histx.set_yticks([])
+    ax_histx.tick_params(labelbottom=False, labelsize=tick_size)
+    for spine in ax_histx.spines.values():
+        spine.set_visible(False)
+    
+    # Right histogram
+    ax_histy = fig.add_subplot(gs[1:, 2])
+    axes['histy'] = ax_histy
+    sns.histplot(y=y, bins=50, kde=True, color='#8E44AD', ax=ax_histy, stat='density', alpha=1)
+    ax_histy.set_ylim(y_lim)
+    histx_lim = ax_histy.get_xlim()
+    ax_histy.set_xlim(0, histx_lim[1]*3)
+    ax_histy.set(xlabel='', ylabel='')
+    ax_histy.set_xticks([])
+    ax_histy.tick_params(labelleft=False, labelsize=tick_size)
+    for spine in ax_histy.spines.values():
+        spine.set_visible(False)
+    
+    plt.tight_layout()
+    plt.close()
+    
+    stats_dict = {'r': r, 'p': p}
+    return fig, axes, stats_dict
+
+def _darker_color(color, factor=0.7):
+    # Accept color in hex string or RGB; convert to RGB, darken, return as tuple
+    rgb = mcolors.to_rgb(color)
+    return tuple(factor * c for c in rgb)
 
 # Plot spearman
 def plot_spearman_bar(

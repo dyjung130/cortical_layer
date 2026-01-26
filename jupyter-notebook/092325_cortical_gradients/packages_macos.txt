@@ -1,0 +1,12 @@
+numpy
+scipy
+matplotlib
+scikit-learn
+ipython
+ipykernel
+jupyter
+plotly
+pillow
+pyqt
+pandas
+joblib
