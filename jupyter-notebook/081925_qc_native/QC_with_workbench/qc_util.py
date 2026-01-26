@@ -1,6 +1,7 @@
 import os
 import re
-
+import nibabel as nib
+import numpy as np
 # Example usage:
 # calculate_surfnorm_and_coords('exvivo2', "/Users/dennis.jungchildmind.org/Desktop/To-be-uploaded-to-CMI-server/data/thickness_data/")
 
@@ -63,3 +64,30 @@ def calculate_surfnorm_and_coords(data_type, base_path):
                         continue
 
                     print(f"Successfully calculated surface normals and coordinates for {folder}")
+
+
+
+def get_surface_xyz(path_surf_norm, path_surf_coords, params, spacing_mm=0.12, dist_max_mm=2):
+    """Generate and plot intensity differences at varying distances from cortical surface"""
+    
+    # Load surface data
+    surf_norm = nib.load(path_surf_norm)
+    surf_coords = nib.load(path_surf_coords)
+    
+    # Extract coordinates and normals
+    norm_xyz = np.array([surf_norm.darrays[i].data for i in range(3)])
+    surf_xyz = np.array([surf_coords.darrays[i].data for i in range(3)])
+
+    #method 1 
+    if params['method'] == 0:
+        #calculate half voxel up (spacing mm/2) and down (spacing mm/2) from the surface along the surfarce normal 
+        dist_array = np.flipud(np.concatenate([-np.arange(spacing_mm/2, dist_max_mm, spacing_mm)[::-1], np.arange(spacing_mm/2, dist_max_mm, spacing_mm)]))
+    elif params['method'] == 1:
+        #calculate full voxel length along the surface normal
+        dist_array = np.flipud(np.concatenate([-np.arange(spacing_mm, dist_max_mm + spacing_mm, spacing_mm)[::-1], [0], 
+                                        np.arange(spacing_mm, dist_max_mm + spacing_mm, spacing_mm)]))
+    
+    #calcualte the voxel coordinates up along the surface normal
+    all_points = [surf_xyz.T + norm_xyz.T * d for d in dist_array]
+    
+    return all_points, dist_array
