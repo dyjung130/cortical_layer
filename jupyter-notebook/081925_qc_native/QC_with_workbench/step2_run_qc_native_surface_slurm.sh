@@ -62,12 +62,14 @@ echo "Array Task ID: ${SLURM_ARRAY_TASK_ID}"
 HEMISPHERES=("lh" "rh")
 echo "Checking required files..."
 
-# Always check if native.nii exists first
-if [[ ! -f "${SUBJECT_DIR}/mri/native.nii.gz" ]]; then
-    echo "ERROR: Required file not found: ${SUBJECT_DIR}/mri/native.nii.gz"
-    exit 1
-else
+# Check for existence of either native.nii.gz or native.nii
+if [[ -f "${SUBJECT_DIR}/mri/native.nii.gz" ]]; then
     echo "Found: ${SUBJECT_DIR}/mri/native.nii.gz"
+elif [[ -f "${SUBJECT_DIR}/mri/native.nii" ]]; then
+    echo "Found: ${SUBJECT_DIR}/mri/native.nii"
+else
+    echo "ERROR: Required file not found: ${SUBJECT_DIR}/mri/native.nii(.gz)"
+    exit 1
 fi
 
 # Check each hemisphere

@@ -248,7 +248,7 @@ def main():
  
     if os.path.exists(vol_path):
         print(f"Loading {vol_path}")
-
+        vol_path_gz = vol_path
     elif os.path.exists(vol_path_gz):
         print(f"Loading {vol_path_gz}")
         
